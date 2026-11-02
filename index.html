@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<button id="btn" style="font-size:1.2em;padding:12px">Connect</button>
+<canvas id="c"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const SVC = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const CHR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+const labels = ["F1 405","F2 425","F3 450","F4 475","F5 515","F6 550","F7 555","F8 590",
+                "F9 640","F10 690","F11 745","F12 855","NIR","Clear"];
+const chart = new Chart(document.getElementById("c"), {
+  type: "bar",
+  data: { labels, datasets: [{ label: "counts", data: new Array(14).fill(0) }] },
+  options: { animation: false }
+});
+
+document.getElementById("btn").onclick = async () => {
+  const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+  const server = await dev.gatt.connect();
+  const chr = await (await server.getPrimaryService(SVC)).getCharacteristic(CHR);
+  chr.addEventListener("characteristicvaluechanged", e => {
+    const v = e.target.value;                       // DataView, 36 bytes
+    const r = i => v.getUint16(i * 2, true);
+    // ADJUST this mapping to match the library's channel order:
+    const idx = [0,1,2,3,4,5, 6,7,8,9,10,11, 12,13];
+    chart.data.datasets[0].data = idx.map(r);
+    chart.update();
+  });
+  await chr.startNotifications();
+};
+</script>
