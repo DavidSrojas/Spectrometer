@@ -111,7 +111,7 @@ const chart = new Chart(document.getElementById("c"), {
     maintainAspectRatio: false,
     plugins: { legend: { display: false }, tooltip: { enabled: false } },
     scales: {
-      y: { min: 0, max: 1000, title: { display: true, text: "Level (0–999)" },
+      y: { min: 0, title: { display: true, text: "Counts" },
            grid: { color: "rgba(255,255,255,.08)" } },
       x: { title: { display: true, text: "Wavelength (nm)" }, grid: { display: false } }
     }
@@ -152,13 +152,21 @@ document.getElementById("btn").onclick = async () => {
     const chr = await service.getCharacteristic(CHR);
     cmdChr = await service.getCharacteristic(CMD);
 
+    let partA = null;
     chr.addEventListener("characteristicvaluechanged", e => {
-      const v = e.target.value;                        // 14 x uint16, little-endian
-      if (v.byteLength < (N + 1) * 2) return;          // incomplete packet
-      chart.data.datasets[0].data = Array.from({ length: N }, (_, i) => v.getUint16(i * 2, true));
-      chart.update();
-      const idx = v.getUint16(N * 2, true);            // gain index 0..12 -> 0.5x ... 2048x
-      gainEl.textContent = (0.5 * 2 ** idx) + "×";
+      const v = e.target.value;
+      const part = v.getUint8(0);                       // 0 = first 9 values, 1 = last 4 values + gain
+      if (part === 0 && v.byteLength >= 19) {
+        partA = Array.from({ length: 9 }, (_, i) => v.getUint16(1 + i * 2, true));
+      } else if (part === 1 && v.byteLength >= 11 && partA) {
+        const rest = Array.from({ length: 4 }, (_, i) => v.getUint16(1 + i * 2, true));
+        chart.data.datasets[0].data = partA.concat(rest);
+        chart.update();
+        const idx = v.getUint16(9, true);               // gain index 0..12 -> 0.5x ... 2048x
+        gainEl.textContent = (0.5 * 2 ** idx) + "×";
+      } else if (part > 1 || v.byteLength < 11) {
+        statusEl.textContent = "Unexpected packet: " + v.byteLength + " bytes";
+      }
     });
     await chr.startNotifications();
     setControls(true);
