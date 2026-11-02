@@ -1,31 +1,121 @@
 <!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<button id="btn" style="font-size:1.2em;padding:12px">Connect</button>
-<canvas id="c"></canvas>
+<title>AS7343 Spectrum</title>
+<style>
+  :root { --bg:#1d2229; --panel:#262c35; --text:#e7eaee; --muted:#9aa4b0; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+  h1 { font-size:1.15rem; margin:0; font-weight:600; }
+  #status { color:var(--muted); font-size:.9rem; margin-top:2px; }
+  button { font:inherit; font-weight:600; padding:10px 18px; border:0; border-radius:8px;
+           background:#e7eaee; color:#1d2229; cursor:pointer; }
+  button:focus-visible { outline:3px solid #7fb6ff; outline-offset:2px; }
+  .chart { background:var(--panel); border-radius:10px; padding:12px; height:min(70vh,520px); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>AS7343 spectrum</h1>
+    <div id="status">Not connected</div>
+  </div>
+  <button id="btn">Connect</button>
+</header>
+<div class="chart"><canvas id="c"></canvas></div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
 const SVC = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const CHR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
-const labels = ["F1 405","F2 425","F3 450","F4 475","F5 515","F6 550","F7 555","F8 590",
-                "F9 640","F10 690","F11 745","F12 855","NIR","Clear"];
+
+// Same order as the ESP32 sketch: 11 visible bands + NIR
+const wavelengths = [405, 425, 450, 475, 515, 550, 555, 600, 640, 690, 745, 855];
+const N = wavelengths.length;
+
+// Approximate visible color for a wavelength (nm). NIR is invisible, so it gets a dark neutral.
+function colorFor(nm) {
+  if (nm > 780) return "#6b6f76";
+  let r = 0, g = 0, b = 0;
+  if (nm < 440)      { r = (440 - nm) / 60; b = 1; }
+  else if (nm < 490) { g = (nm - 440) / 50; b = 1; }
+  else if (nm < 510) { g = 1; b = (510 - nm) / 20; }
+  else if (nm < 580) { r = (nm - 510) / 70; g = 1; }
+  else if (nm < 645) { r = 1; g = (645 - nm) / 65; }
+  else               { r = 1; }
+  let f = 1;
+  if (nm < 420) f = 0.3 + 0.7 * (nm - 380) / 40;
+  else if (nm > 700) f = 0.3 + 0.7 * (780 - nm) / 80;
+  const c = x => Math.round(255 * Math.pow(x * f, 0.8));
+  return `rgb(${c(r)},${c(g)},${c(b)})`;
+}
+
+// Draws the numeric value above each bar
+const valueLabels = {
+  id: "valueLabels",
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    ctx.save();
+    ctx.fillStyle = "#e7eaee";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    chart.getDatasetMeta(0).data.forEach((bar, i) => {
+      ctx.fillText(chart.data.datasets[0].data[i], bar.x, bar.y - 6);
+    });
+    ctx.restore();
+  }
+};
+
+Chart.defaults.color = "#9aa4b0";
 const chart = new Chart(document.getElementById("c"), {
   type: "bar",
-  data: { labels, datasets: [{ label: "counts", data: new Array(14).fill(0) }] },
-  options: { animation: false }
+  data: {
+    labels: wavelengths.map(String),
+    datasets: [{ data: new Array(N).fill(0),
+                 backgroundColor: wavelengths.map(colorFor),
+                 borderRadius: 3 }]
+  },
+  options: {
+    animation: false,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: {
+      y: { min: 0, max: 1000, title: { display: true, text: "Level (0–999)" },
+           grid: { color: "rgba(255,255,255,.08)" } },
+      x: { title: { display: true, text: "Wavelength (nm)" }, grid: { display: false } }
+    }
+  },
+  plugins: [valueLabels]
 });
 
+const statusEl = document.getElementById("status");
+
 document.getElementById("btn").onclick = async () => {
-  const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
-  const server = await dev.gatt.connect();
-  const chr = await (await server.getPrimaryService(SVC)).getCharacteristic(CHR);
-  chr.addEventListener("characteristicvaluechanged", e => {
-    const v = e.target.value;                       // DataView, 36 bytes
-    const r = i => v.getUint16(i * 2, true);
-    // ADJUST this mapping to match the library's channel order:
-    const idx = [0,1,2,3,4,5, 6,7,8,9,10,11, 12,13];
-    chart.data.datasets[0].data = idx.map(r);
-    chart.update();
-  });
-  await chr.startNotifications();
+  try {
+    statusEl.textContent = "Choose your device…";
+    const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    dev.addEventListener("gattserverdisconnected", () => { statusEl.textContent = "Disconnected"; });
+    statusEl.textContent = "Connecting…";
+    const server = await dev.gatt.connect();
+    const service = await server.getPrimaryService(SVC);
+    const chr = await service.getCharacteristic(CHR);
+
+    chr.addEventListener("characteristicvaluechanged", e => {
+      const v = e.target.value;                       // 12 x uint16, little-endian
+      if (v.byteLength < N * 2) return;               // incomplete packet
+      chart.data.datasets[0].data = Array.from({ length: N }, (_, i) => v.getUint16(i * 2, true));
+      chart.update();
+    });
+    await chr.startNotifications();
+    statusEl.textContent = "Connected to " + (dev.name || "device");
+  } catch (err) {
+    statusEl.textContent = "Could not connect: " + err.message;
+  }
 };
 </script>
+</body>
+</html>
