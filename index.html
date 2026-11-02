@@ -5,17 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AS7343 Spectrum</title>
 <style>
-  :root { --bg:#1d2229; --panel:#262c35; --text:#e7eaee; --muted:#9aa4b0; }
+  :root { --bg:#1d2229; --panel:#262c35; --text:#e7eaee; --muted:#9aa4b0; --line:#3a424d; }
   * { box-sizing: border-box; }
   body { margin:0; padding:16px; background:var(--bg); color:var(--text);
          font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
   header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
   h1 { font-size:1.15rem; margin:0; font-weight:600; }
   #status { color:var(--muted); font-size:.9rem; margin-top:2px; }
-  button { font:inherit; font-weight:600; padding:10px 18px; border:0; border-radius:8px;
-           background:#e7eaee; color:#1d2229; cursor:pointer; }
+  button { font:inherit; font-weight:600; border:0; border-radius:8px; cursor:pointer; }
   button:focus-visible { outline:3px solid #7fb6ff; outline-offset:2px; }
-  .chart { background:var(--panel); border-radius:10px; padding:12px; height:min(70vh,520px); }
+  button:disabled { opacity:.4; cursor:default; }
+  #btn { padding:10px 18px; background:#e7eaee; color:#1d2229; }
+  .chart { background:var(--panel); border-radius:10px; padding:12px; height:min(60vh,480px); }
+  .controls { display:flex; flex-wrap:wrap; gap:20px 28px; align-items:center; margin-top:12px;
+              background:var(--panel); border-radius:10px; padding:12px; }
+  .group { display:flex; align-items:center; gap:8px; }
+  .group > span { color:var(--muted); font-size:.9rem; margin-right:2px; }
+  .led { width:44px; height:44px; color:#1d2229; }
+  .led.off { background:transparent; color:var(--text); border:1px solid var(--line); width:auto; padding:0 14px; }
+  .gain { width:44px; height:44px; background:#3a424d; color:var(--text); font-size:1.3rem; }
+  #gainVal { min-width:6.5em; text-align:center; font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -26,16 +35,37 @@
   </div>
   <button id="btn">Connect</button>
 </header>
+
 <div class="chart"><canvas id="c"></canvas></div>
+
+<div class="controls">
+  <div class="group" id="leds">
+    <span>LED</span>
+    <button class="led" data-cmd="R" style="background:#e5484d" aria-label="Red LED" disabled>R</button>
+    <button class="led" data-cmd="G" style="background:#3fb950" aria-label="Green LED" disabled>G</button>
+    <button class="led" data-cmd="B" style="background:#4c8dff" aria-label="Blue LED" disabled>B</button>
+    <button class="led" data-cmd="W" style="background:#f2f2f2" aria-label="White LED" disabled>W</button>
+    <button class="led" data-cmd="Y" style="background:#f2c94c" aria-label="Yellow LED" disabled>Y</button>
+    <button class="led" data-cmd="O" style="background:#f2994a" aria-label="Orange LED" disabled>O</button>
+    <button class="led off" data-cmd="C" disabled>Off</button>
+  </div>
+  <div class="group">
+    <span>Gain</span>
+    <button class="gain" data-cmd="-" aria-label="Lower gain" disabled>&minus;</button>
+    <div id="gainVal">&ndash;</div>
+    <button class="gain" data-cmd="+" aria-label="Raise gain" disabled>+</button>
+  </div>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
 const SVC = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
-const CHR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+const CHR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";   // data from ESP32
+const CMD = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";   // commands to ESP32
 
-// Same order as the ESP32 sketch: 11 visible bands + NIR
-const wavelengths = [405, 425, 450, 475, 515, 550, 555, 600, 640, 690, 745, 855];
-const N = wavelengths.length;
+// Same order as the ESP32 sketch: F1, F2, FZ, F3, F4, F5, FY, FXL, F6, F7, F8, VIS, NIR
+const labels = ["405","425","450","475","515","550","555","600","640","690","745","VIS","855"];
+const N = labels.length;   // 13 values, then 1 extra value for the gain index
 
 // Approximate visible color for a wavelength (nm). NIR is invisible, so it gets a dark neutral.
 function colorFor(nm) {
@@ -53,6 +83,7 @@ function colorFor(nm) {
   const c = x => Math.round(255 * Math.pow(x * f, 0.8));
   return `rgb(${c(r)},${c(g)},${c(b)})`;
 }
+const colors = labels.map(l => l === "VIS" ? "#d9dde3" : colorFor(Number(l)));
 
 // Draws the numeric value above each bar
 const valueLabels = {
@@ -73,12 +104,8 @@ const valueLabels = {
 Chart.defaults.color = "#9aa4b0";
 const chart = new Chart(document.getElementById("c"), {
   type: "bar",
-  data: {
-    labels: wavelengths.map(String),
-    datasets: [{ data: new Array(N).fill(0),
-                 backgroundColor: wavelengths.map(colorFor),
-                 borderRadius: 3 }]
-  },
+  data: { labels,
+          datasets: [{ data: new Array(N).fill(0), backgroundColor: colors, borderRadius: 3 }] },
   options: {
     animation: false,
     maintainAspectRatio: false,
@@ -93,24 +120,48 @@ const chart = new Chart(document.getElementById("c"), {
 });
 
 const statusEl = document.getElementById("status");
+const gainEl = document.getElementById("gainVal");
+const controls = document.querySelectorAll("[data-cmd]");
+let cmdChr = null;
+let seq = Math.floor(Math.random() * 256);
+
+function setControls(on) { controls.forEach(b => b.disabled = !on); }
+
+// Sends one command character (same letters you type in the Serial Monitor)
+async function send(ch) {
+  if (!cmdChr) return;
+  seq = (seq + 1) & 255;                     // counter lets the ESP32 tell repeated presses apart
+  try {
+    await cmdChr.writeValueWithResponse(new Uint8Array([seq, ch.charCodeAt(0)]));
+  } catch (err) {
+    statusEl.textContent = "Command failed: " + err.message;
+  }
+}
+controls.forEach(b => b.addEventListener("click", () => send(b.dataset.cmd)));
 
 document.getElementById("btn").onclick = async () => {
   try {
     statusEl.textContent = "Choose your device…";
     const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
-    dev.addEventListener("gattserverdisconnected", () => { statusEl.textContent = "Disconnected"; });
+    dev.addEventListener("gattserverdisconnected", () => {
+      cmdChr = null; setControls(false); statusEl.textContent = "Disconnected";
+    });
     statusEl.textContent = "Connecting…";
     const server = await dev.gatt.connect();
     const service = await server.getPrimaryService(SVC);
     const chr = await service.getCharacteristic(CHR);
+    cmdChr = await service.getCharacteristic(CMD);
 
     chr.addEventListener("characteristicvaluechanged", e => {
-      const v = e.target.value;                       // 12 x uint16, little-endian
-      if (v.byteLength < N * 2) return;               // incomplete packet
+      const v = e.target.value;                        // 14 x uint16, little-endian
+      if (v.byteLength < (N + 1) * 2) return;          // incomplete packet
       chart.data.datasets[0].data = Array.from({ length: N }, (_, i) => v.getUint16(i * 2, true));
       chart.update();
+      const idx = v.getUint16(N * 2, true);            // gain index 0..12 -> 0.5x ... 2048x
+      gainEl.textContent = (0.5 * 2 ** idx) + "×";
     });
     await chr.startNotifications();
+    setControls(true);
     statusEl.textContent = "Connected to " + (dev.name || "device");
   } catch (err) {
     statusEl.textContent = "Could not connect: " + err.message;
